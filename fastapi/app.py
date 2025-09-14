@@ -242,7 +242,7 @@ def upload_documents_to_pinecone_from_file(file_path: str) -> int:
         
         return len(chunks)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing PDF: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error 0: {str(e)}")
 
 def upload_documents_to_pinecone_from_directory():
     """Upload all PDFs from the data directory to Pinecone database"""
