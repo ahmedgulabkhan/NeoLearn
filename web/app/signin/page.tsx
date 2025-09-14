@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client'
 
 import { useState } from 'react'
@@ -135,7 +136,7 @@ export default function SignIn() {
 
             <div className="text-center">
               <span className="text-sm text-gray-500">
-                Don't have an account?{' '}
+                Don&apos;t have an account?{' '}
                 <Link
                   href="/signup"
                   className="font-medium text-blue-600 hover:text-blue-500 transition-colors duration-200"

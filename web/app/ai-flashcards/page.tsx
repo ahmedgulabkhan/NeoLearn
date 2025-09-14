@@ -224,7 +224,7 @@ export default function AIFlashcards() {
                   <XCircle className="h-16 w-16 text-red-500 mx-auto mb-4" />
                 )}
                 <h1 className="text-3xl font-bold text-gray-900 mb-2">Study Session Complete!</h1>
-                <p className="text-gray-600">Here's how you performed</p>
+                <p className="text-gray-600">Here&apos;s how you performed</p>
               </div>
 
               <div className="bg-gray-50 rounded-xl p-6 mb-8">
