@@ -11,11 +11,13 @@ from langchain.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
 # from langchain.document_loaders.pdf import PyPDFDirectoryLoader, PyPDFLoader
-from langchain_community.vectorstores import Chroma
+# from langchain_community.vectorstores import Chroma
 from langchain_community.document_loaders import PyPDFLoader, PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.schema.document import Document
-from chromadb.config import Settings
+# from chromadb.config import Settings
+from pinecone import Pinecone, ServerlessSpec
+from langchain_pinecone import PineconeVectorStore
 
 load_dotenv()
 
@@ -25,19 +27,40 @@ app = FastAPI(title="RAG API", description="API for document upload and RAG quer
 CHROMA_PATH = "chroma"
 DATA_PATH = "data"
 
-embeddings = OpenAIEmbeddings(model="text-embedding-3-large", dimensions=1536)
+embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=1536)
 
-db_client_settings = Settings(
-    anonymized_telemetry=False,   # <-- prevents the telemetry crash
-    is_persistent=True,
-    persist_directory=CHROMA_PATH
-)
+# db_client_settings = Settings(
+#     anonymized_telemetry=False,   # <-- prevents the telemetry crash
+#     is_persistent=True,
+#     persist_directory=CHROMA_PATH
+# )
 
-db = Chroma(
-    collection_name="neo_docs",           # your collection
-    embedding_function=embeddings,        # your embeddings object
-    persist_directory=CHROMA_PATH,
-    client_settings=db_client_settings
+# db = Chroma(
+#     collection_name="neo_docs",           # your collection
+#     embedding_function=embeddings,        # your embeddings object
+#     persist_directory=CHROMA_PATH,
+#     client_settings=db_client_settings
+# )
+INDEX_NAME = os.getenv("PINECONE_INDEX", "neo-docs")
+
+pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
+
+# Create serverless index if it doesn't exist (choose region/cloud you set in env)
+if INDEX_NAME not in {i.name for i in pc.list_indexes().indexes}:
+    pc.create_index(
+        name=INDEX_NAME,
+        dimension=1536,  # must match your embeddings dimension
+        metric="cosine",
+        spec=ServerlessSpec(
+            cloud=os.getenv("PINECONE_CLOUD", "aws"),
+            region=os.getenv("PINECONE_REGION", "us-east-1"),
+        ),
+    )
+
+# LangChain vectorstore wrapper
+vectorstore = PineconeVectorStore.from_existing_index(
+    index_name=INDEX_NAME,
+    embedding=embeddings
 )
 
 # Response models
@@ -72,12 +95,21 @@ def split_documents(documents: list[Document]):
     )
     return text_splitter.split_documents(documents)
 
-def add_to_chroma(chunks: list[Document]):
+def add_to_pinecone(chunks: list[Document]):
+    """Add documents to Pinecone vectorstore"""
     chunks_with_ids = calculate_chunk_ids(chunks)
-
-    existing_items = db.get(include=[])
-    existing_ids = set(existing_items["ids"])
-    print(f"Number of existing documents in DB: {len(existing_ids)}")
+    
+    # Get existing document IDs from Pinecone
+    try:
+        existing_docs = vectorstore.similarity_search("", k=10000)  # Get all docs
+        existing_ids = set()
+        for doc in existing_docs:
+            if "id" in doc.metadata:
+                existing_ids.add(doc.metadata["id"])
+        print(f"Number of existing documents in DB: {len(existing_ids)}")
+    except Exception as e:
+        print(f"Error getting existing documents: {e}")
+        existing_ids = set()
 
     new_chunks = []
     for chunk in chunks_with_ids:
@@ -86,9 +118,12 @@ def add_to_chroma(chunks: list[Document]):
 
     if len(new_chunks):
         print(f"Adding new documents: {len(new_chunks)}")
-        new_chunk_ids = [chunk.metadata["id"] for chunk in new_chunks]
-        db.add_documents(new_chunks, ids=new_chunk_ids)
-        db.persist()
+        try:
+            vectorstore.add_documents(new_chunks)
+            print("Successfully added documents to Pinecone")
+        except Exception as e:
+            print(f"Error adding documents to Pinecone: {e}")
+            raise e
     else:
         print("No new documents to add")
 
@@ -114,29 +149,45 @@ def calculate_chunk_ids(chunks):
     return chunks
 
 def clear_database():
-    if os.path.exists(CHROMA_PATH):
-        shutil.rmtree(CHROMA_PATH)
+    """Clear all documents from Pinecone index"""
+    try:
+        # Check if index exists
+        if INDEX_NAME not in {i.name for i in pc.list_indexes().indexes}:
+            print("Index does not exist, nothing to clear")
+            return
+        
+        # Delete all vectors from the index
+        index = pc.Index(INDEX_NAME)
+        index.delete(delete_all=True)
+        print("Successfully cleared Pinecone database")
+    except Exception as e:
+        print(f"Error clearing Pinecone database: {e}")
+        # Don't raise the error for 404 (index not found)
+        if "404" not in str(e):
+            raise e
 
 def query_rag(query_text: str):
-    # embedding_function = embeddings
-    # db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embedding_function)
+    """Query the RAG system using Pinecone"""
+    try:
+        results = vectorstore.similarity_search_with_score(query_text, k=5)
 
-    results = db.similarity_search_with_score(query_text, k=5)
+        context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
+        prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+        prompt = prompt_template.format(context=context_text, question=query_text)
 
-    context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
-    prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-    prompt = prompt_template.format(context=context_text, question=query_text)
+        model = ChatOpenAI(model="gpt-4o")
+        response_text = model.invoke(prompt)
 
-    model = ChatOpenAI(model="gpt-4o")
-    response_text = model.invoke(prompt)
+        sources = [doc.metadata.get("id", None) for doc, _score in results]
+        formatted_response = f"Response: {response_text}\nSources: {sources}"
+        print(formatted_response)
+        return response_text
+    except Exception as e:
+        print(f"Error querying RAG: {e}")
+        raise e
 
-    sources = [doc.metadata.get("id", None) for doc, _score in results]
-    formatted_response = f"Response: {response_text}\nSources: {sources}"
-    print(formatted_response)
-    return response_text
-
-def upload_documents_to_chroma_from_file(file_path: str) -> int:
-    """Upload a single PDF file to Chroma database"""
+def upload_documents_to_pinecone_from_file(file_path: str) -> int:
+    """Upload a single PDF file to Pinecone database"""
     try:
         # Load the PDF document
         loader = PyPDFLoader(file_path)
@@ -145,31 +196,28 @@ def upload_documents_to_chroma_from_file(file_path: str) -> int:
         # Split documents into chunks
         chunks = split_documents(documents)
         
-        # Add to Chroma database
-        add_to_chroma(chunks)
+        # Add to Pinecone database
+        add_to_pinecone(chunks)
         
         return len(chunks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing PDF: {str(e)}")
 
-def upload_documents_to_chroma_from_directory():
-    """Upload all PDFs from the data directory to Chroma database"""
+def upload_documents_to_pinecone_from_directory():
+    """Upload all PDFs from the data directory to Pinecone database"""
     try:
         clear_database()
         documents = load_documents()
         chunks = split_documents(documents)
-        add_to_chroma(chunks)
+        add_to_pinecone(chunks)
         return len(chunks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing documents: {str(e)}")
 
-def query_rag_from_chroma(query_text: str) -> dict:
+def query_rag_from_pinecone(query_text: str) -> dict:
     """Query the RAG system and return response with sources"""
     try:
-        # embedding_function = embeddings
-        # db = Chroma(persist_directory=CHROMA_PATH, embedding_function=embedding_function)
-
-        results = db.similarity_search_with_score(query_text, k=5)
+        results = vectorstore.similarity_search_with_score(query_text, k=5)
 
         context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
         prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
@@ -189,9 +237,9 @@ def query_rag_from_chroma(query_text: str) -> dict:
 
 # API Endpoints
 @app.post("/upload-documents", response_model=UploadResponse)
-async def upload_documents_to_chroma(file: UploadFile = File(...)):
+async def upload_documents_to_pinecone(file: UploadFile = File(...)):
     """
-    Upload a PDF file to the Chroma database.
+    Upload a PDF file to the Pinecone database.
     The file will be processed, split into chunks, and added to the vector store.
     """
     # Check if file is PDF
@@ -207,7 +255,7 @@ async def upload_documents_to_chroma(file: UploadFile = File(...)):
             tmp_file_path = tmp_file.name
             
             # Process the PDF file
-            documents_processed = upload_documents_to_chroma_from_file(tmp_file_path)
+            documents_processed = upload_documents_to_pinecone_from_file(tmp_file_path)
             
             return UploadResponse(
                 message=f"Successfully uploaded and processed {file.filename}",
@@ -220,7 +268,7 @@ async def upload_documents_to_chroma(file: UploadFile = File(...)):
                 os.unlink(tmp_file_path)
 
 @app.post("/query", response_model=QueryResponse)
-async def query_rag_from_chroma_api(query: str):
+async def query_rag_from_pinecone_api(query: str):
     """
     Query the RAG system with a text query.
     Returns the AI response along with source document IDs.
@@ -228,7 +276,7 @@ async def query_rag_from_chroma_api(query: str):
     if not query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     
-    result = query_rag_from_chroma(query)
+    result = query_rag_from_pinecone(query)
     return QueryResponse(
         response=result["response"],
         sources=result["sources"]
