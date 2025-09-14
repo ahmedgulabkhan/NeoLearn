@@ -1,0 +1,11 @@
+.env
+/venv
+/web/node_modules
+/web/.env
+/web/.next
+/fastapi/.env
+/fastapi/data
+/fastapi/chroma
+/fastapi/venv
+/fastapi/__pycache__
+.DS_Store
