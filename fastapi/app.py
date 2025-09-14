@@ -50,6 +50,11 @@ if missing_vars:
 # Initialize embeddings
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=1536)
 
+try:
+    _ = embeddings.embed_query("ping")
+except Exception as e:
+    raise RuntimeError(f"OpenAI embeddings init failed: {e}")
+
 # db_client_settings = Settings(
 #     anonymized_telemetry=False,   # <-- prevents the telemetry crash
 #     is_persistent=True,
