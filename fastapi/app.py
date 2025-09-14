@@ -265,6 +265,7 @@ def query_rag(query_text: str):
 def upload_documents_to_pinecone_from_file(file_path: str) -> int:
     """Upload a single PDF file to Pinecone database"""
     try:
+        clear_database()
         # Load the PDF document
         loader = PyPDFLoader(file_path)
         documents = loader.load()
@@ -282,7 +283,6 @@ def upload_documents_to_pinecone_from_file(file_path: str) -> int:
 def upload_documents_to_pinecone_from_directory():
     """Upload all PDFs from the data directory to Pinecone database"""
     try:
-        clear_database()
         documents = load_documents()
         chunks = split_documents(documents)
         add_to_pinecone(chunks)
