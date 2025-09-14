@@ -315,9 +315,9 @@ async def upload_documents_to_pinecone(file: UploadFile = File(...)):
 
     except FileNotFoundError as e:
         # Path doesn't exist OR your processing code tried to call a missing binary
-        raise HTTPException(status_code=400, detail=f"Error processing PDF: {e}")
+        raise HTTPException(status_code=400, detail=f"Error 1: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing PDF: {e}")
+        raise HTTPException(status_code=500, detail=f"Error 2: {e}")
     finally:
         if tmp_file_path and os.path.exists(tmp_file_path):
             try:
