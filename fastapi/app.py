@@ -135,40 +135,93 @@ def split_documents(documents: list[Document]):
     )
     return text_splitter.split_documents(documents)
 
-def add_to_pinecone(chunks: list[Document]):
-    """Add documents to Pinecone vectorstore"""
+# def add_to_pinecone(chunks: list[Document]):
+#     """Add documents to Pinecone vectorstore"""
+#     if vectorstore is None:
+#         raise HTTPException(status_code=500, detail="Vectorstore not initialized")
+        
+#     chunks_with_ids = calculate_chunk_ids(chunks)
+    
+#     # Get existing document IDs from Pinecone
+#     try:
+#         existing_docs = vectorstore.similarity_search("", k=10000)  # Get all docs
+#         existing_ids = set()
+#         for doc in existing_docs:
+#             if "id" in doc.metadata:
+#                 existing_ids.add(doc.metadata["id"])
+#         print(f"Number of existing documents in DB: {len(existing_ids)}")
+#     except Exception as e:
+#         print(f"Error getting existing documents: {e}")
+#         existing_ids = set()
+
+#     new_chunks = []
+#     for chunk in chunks_with_ids:
+#         if chunk.metadata["id"] not in existing_ids:
+#             new_chunks.append(chunk)
+
+#     if len(new_chunks):
+#         print(f"Adding new documents: {len(new_chunks)}")
+#         try:
+#             vectorstore.add_documents(new_chunks)
+#             print("Successfully added documents to Pinecone")
+#         except Exception as e:
+#             print(f"Error adding documents to Pinecone: {e}")
+#             raise e
+#     else:
+#         print("No new documents to add")
+
+import math, traceback
+from typing import List
+from langchain.schema import Document as LCDocument
+from pinecone import Pinecone
+
+UPSERT_BATCH = 100  # small batches are safer on serverless
+
+def add_to_pinecone(chunks: List[LCDocument]) -> None:
     if vectorstore is None:
         raise HTTPException(status_code=500, detail="Vectorstore not initialized")
-        
-    chunks_with_ids = calculate_chunk_ids(chunks)
-    
-    # Get existing document IDs from Pinecone
+
+    # Ensure chunk IDs exist
+    chunks = calculate_chunk_ids(chunks)
+    for c in chunks:
+        if not c.metadata.get("id"):
+            raise HTTPException(status_code=500, detail="Some chunks missing 'id' in metadata")
+
+    # 1) Embed texts explicitly (so errors surface here if any)
+    texts = [c.page_content for c in chunks]
     try:
-        existing_docs = vectorstore.similarity_search("", k=10000)  # Get all docs
-        existing_ids = set()
-        for doc in existing_docs:
-            if "id" in doc.metadata:
-                existing_ids.add(doc.metadata["id"])
-        print(f"Number of existing documents in DB: {len(existing_ids)}")
+        embeddings_list = embeddings.embed_documents(texts)
     except Exception as e:
-        print(f"Error getting existing documents: {e}")
-        existing_ids = set()
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Embedding failed: {e}")
 
-    new_chunks = []
-    for chunk in chunks_with_ids:
-        if chunk.metadata["id"] not in existing_ids:
-            new_chunks.append(chunk)
+    # 2) Upsert directly with Pinecone client (skip LangChain wrapper)
+    try:
+        # make sure index exists and dims match
+        desc = pc.describe_index(INDEX_NAME)
+        if desc.dimension != 1536:
+            raise HTTPException(status_code=500, detail=f"Pinecone index dim {desc.dimension} != 1536")
 
-    if len(new_chunks):
-        print(f"Adding new documents: {len(new_chunks)}")
-        try:
-            vectorstore.add_documents(new_chunks)
-            print("Successfully added documents to Pinecone")
-        except Exception as e:
-            print(f"Error adding documents to Pinecone: {e}")
-            raise e
-    else:
-        print("No new documents to add")
+        index = pc.Index(INDEX_NAME)
+
+        # build vectors
+        vectors = []
+        for c, emb in zip(chunks, embeddings_list):
+            meta = dict(c.metadata or {})
+            # optional: store a short text snippet to keep metadata small
+            meta["text"] = c.page_content[:1000]
+            vectors.append({"id": meta["id"], "values": emb, "metadata": meta})
+
+        # batch upsert
+        for i in range(0, len(vectors), UPSERT_BATCH):
+            batch = vectors[i:i+UPSERT_BATCH]
+            index.upsert(vectors=batch, namespace="default")  # set your namespace if you use one
+
+        print(f"Successfully added {len(vectors)} documents to Pinecone")
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Upsert failed: {e}")
+
 
 def calculate_chunk_ids(chunks):
     last_page_id = None
