@@ -1,0 +1,5 @@
+# constraints.txt
+starlette>=0.38.2,<0.39
+anyio>=4.4,<5
+typing-extensions>=4.9,<5
+numpy>=1.26,<2

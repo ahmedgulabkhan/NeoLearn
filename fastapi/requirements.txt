@@ -15,21 +15,24 @@
 # langchain-pinecone==0.2.12
 # pypdf==4.3.1
 
-# --- core API ---
+
+--constraint constraints.txt
+
 fastapi==0.115.0
 pydantic>=2.7,<3
 python-multipart==0.0.9
 python-dotenv==1.0.1
-httpx==0.27.2
+httpx>=0.27,<0.28
 
-# --- langchain ---
-langchain==0.2.16
-langchain-openai==0.1.22
-langchain-community==0.2.16
-langsmith==0.1.119
+# LangChain 0.3 line (keep these in lockstep)
+langchain>=0.3,<0.4
+langchain-openai>=0.3,<0.4
+langchain-community>=0.3,<0.4
+langsmith>=0.1.119,<0.2
 
-pinecone>=5.4.0
-langchain-pinecone==0.2.12
+# Pinecone (new SDK) + integration compatible with LC 0.3
+pinecone>=5.4
+langchain-pinecone>=0.2.12,<0.3
 
-# --- pdf ---
-pypdf==4.3.1
+# PDF
+pypdf>=4.3,<5
