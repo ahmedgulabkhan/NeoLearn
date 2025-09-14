@@ -1,6 +1,7 @@
 import os
 import shutil
 import tempfile
+import traceback
 from typing import List
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
@@ -16,6 +17,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_community.document_loaders import PyPDFLoader, PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.schema.document import Document
+from langchain.schema import Document as LCDocument
 # from chromadb.config import Settings
 from pinecone import Pinecone, ServerlessSpec
 from langchain_pinecone import PineconeVectorStore
@@ -55,27 +57,14 @@ try:
 except Exception as e:
     raise RuntimeError(f"OpenAI embeddings init failed: {e}")
 
-# db_client_settings = Settings(
-#     anonymized_telemetry=False,   # <-- prevents the telemetry crash
-#     is_persistent=True,
-#     persist_directory=CHROMA_PATH
-# )
-
-# db = Chroma(
-#     collection_name="neo_docs",           # your collection
-#     embedding_function=embeddings,        # your embeddings object
-#     persist_directory=CHROMA_PATH,
-#     client_settings=db_client_settings
-# )
 INDEX_NAME = os.getenv("PINECONE_INDEX", "neo-docs")
 
-# Initialize Pinecone client
+
 try:
     pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
 except Exception as e:
     raise ValueError(f"Failed to initialize Pinecone client: {e}")
 
-# Create serverless index if it doesn't exist (choose region/cloud you set in env)
 try:
     if INDEX_NAME not in {i.name for i in pc.list_indexes().indexes}:
         pc.create_index(
@@ -170,22 +159,10 @@ def split_documents(documents: list[Document]):
 #     else:
 #         print("No new documents to add")
 
-import math, traceback
-from typing import List
-from langchain.schema import Document as LCDocument
-from pinecone import Pinecone
-
 UPSERT_BATCH = 100  # small batches are safer on serverless
 
 def add_to_pinecone(chunks: List[LCDocument]) -> None:
-    if vectorstore is None:
-        raise HTTPException(status_code=500, detail="Vectorstore not initialized")
-
-    # Ensure chunk IDs exist
     chunks = calculate_chunk_ids(chunks)
-    for c in chunks:
-        if not c.metadata.get("id"):
-            raise HTTPException(status_code=500, detail="Some chunks missing 'id' in metadata")
 
     # 1) Embed texts explicitly (so errors surface here if any)
     texts = [c.page_content for c in chunks]
@@ -209,13 +186,13 @@ def add_to_pinecone(chunks: List[LCDocument]) -> None:
         for c, emb in zip(chunks, embeddings_list):
             meta = dict(c.metadata or {})
             # optional: store a short text snippet to keep metadata small
-            meta["text"] = c.page_content[:1000]
+            meta["text"] = c.page_content
             vectors.append({"id": meta["id"], "values": emb, "metadata": meta})
 
         # batch upsert
         for i in range(0, len(vectors), UPSERT_BATCH):
             batch = vectors[i:i+UPSERT_BATCH]
-            index.upsert(vectors=batch, namespace="default")  # set your namespace if you use one
+            index.upsert(vectors=batch, namespace="")  # set your namespace if you use one
 
         print(f"Successfully added {len(vectors)} documents to Pinecone")
     except Exception as e:
@@ -300,7 +277,7 @@ def upload_documents_to_pinecone_from_file(file_path: str) -> int:
         
         return len(chunks)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error 0: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error Processing PDF: {str(e)}")
 
 def upload_documents_to_pinecone_from_directory():
     """Upload all PDFs from the data directory to Pinecone database"""
@@ -362,11 +339,6 @@ async def upload_documents_to_pinecone(file: UploadFile = File(...)):
                 tmp_file.write(chunk)
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
-        
-        if tmp_file_path and os.path.exists(tmp_file_path):
-            print(f"tmp_file_path exists: {tmp_file_path}")
-        else:
-            print(f"tmp_file_path does not exist: {tmp_file_path}")
 
         # Now the file is closed and fully on disk; process it
         documents_processed = upload_documents_to_pinecone_from_file(tmp_file_path)
@@ -378,34 +350,15 @@ async def upload_documents_to_pinecone(file: UploadFile = File(...)):
 
     except FileNotFoundError as e:
         # Path doesn't exist OR your processing code tried to call a missing binary
-        raise HTTPException(status_code=400, detail=f"Error 1: {e}")
+        raise HTTPException(status_code=400, detail=f"Error Processing PDF: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error 2: {e}")
+        raise HTTPException(status_code=500, detail=f"Error Processing PDF: {e}")
     finally:
         if tmp_file_path and os.path.exists(tmp_file_path):
             try:
                 os.unlink(tmp_file_path)
             except Exception:
                 pass
-    # with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', dir="/tmp") as tmp_file:
-    #     try:
-    #         # Save uploaded file to temporary location
-    #         content = await file.read()
-    #         tmp_file.write(content)
-    #         tmp_file_path = tmp_file.name
-            
-    #         # Process the PDF file
-    #         documents_processed = upload_documents_to_pinecone_from_file(tmp_file_path)
-            
-    #         return UploadResponse(
-    #             message=f"Successfully uploaded and processed {file.filename}",
-    #             documents_processed=documents_processed
-    #         )
-            
-    #     finally:
-    #         # Clean up temporary file
-    #         if os.path.exists(tmp_file_path):
-    #             os.unlink(tmp_file_path)
 
 @app.post("/query", response_model=QueryResponse)
 async def query_rag_from_pinecone_api(query: str):
