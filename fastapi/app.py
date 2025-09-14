@@ -307,6 +307,8 @@ async def upload_documents_to_pinecone(file: UploadFile = File(...)):
         
         if tmp_file_path and os.path.exists(tmp_file_path):
             print(f"tmp_file_path exists: {tmp_file_path}")
+        else:
+            print(f"tmp_file_path does not exist: {tmp_file_path}")
 
         # Now the file is closed and fully on disk; process it
         documents_processed = upload_documents_to_pinecone_from_file(tmp_file_path)
