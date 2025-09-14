@@ -28,9 +28,8 @@ langchain-openai==0.1.22
 langchain-community==0.2.16
 langsmith==0.1.119
 
-# --- vector store: Pinecone (serverless) ---
-pinecone==5.0.1          # DO NOT install pinecone-client alongside this
-langchain-pinecone==0.1.2
+pinecone>=5.4.0
+langchain-pinecone==0.2.12
 
 # --- pdf ---
 pypdf==4.3.1
