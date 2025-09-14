@@ -291,25 +291,58 @@ async def upload_documents_to_pinecone(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="File must be a PDF")
     
     # Create temporary file to save uploaded PDF
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-        try:
-            # Save uploaded file to temporary location
-            content = await file.read()
-            tmp_file.write(content)
+    tmp_file_path = None
+    try:
+        # Always write into /tmp on Vercel and close before processing
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf", dir="/tmp") as tmp_file:
             tmp_file_path = tmp_file.name
-            
-            # Process the PDF file
-            documents_processed = upload_documents_to_pinecone_from_file(tmp_file_path)
-            
-            return UploadResponse(
-                message=f"Successfully uploaded and processed {file.filename}",
-                documents_processed=documents_processed
-            )
-            
-        finally:
-            # Clean up temporary file
-            if os.path.exists(tmp_file_path):
+            # stream in chunks (avoid reading whole file into RAM)
+            while True:
+                chunk = await file.read(1024 * 1024)  # 1 MB
+                if not chunk:
+                    break
+                tmp_file.write(chunk)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+
+        # Now the file is closed and fully on disk; process it
+        documents_processed = upload_documents_to_pinecone_from_file(tmp_file_path)
+
+        return UploadResponse(
+            message=f"Successfully uploaded and processed {file.filename}",
+            documents_processed=documents_processed
+        )
+
+    except FileNotFoundError as e:
+        # Path doesn't exist OR your processing code tried to call a missing binary
+        raise HTTPException(status_code=400, detail=f"Error processing PDF: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing PDF: {e}")
+    finally:
+        if tmp_file_path and os.path.exists(tmp_file_path):
+            try:
                 os.unlink(tmp_file_path)
+            except Exception:
+                pass
+    # with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', dir="/tmp") as tmp_file:
+    #     try:
+    #         # Save uploaded file to temporary location
+    #         content = await file.read()
+    #         tmp_file.write(content)
+    #         tmp_file_path = tmp_file.name
+            
+    #         # Process the PDF file
+    #         documents_processed = upload_documents_to_pinecone_from_file(tmp_file_path)
+            
+    #         return UploadResponse(
+    #             message=f"Successfully uploaded and processed {file.filename}",
+    #             documents_processed=documents_processed
+    #         )
+            
+    #     finally:
+    #         # Clean up temporary file
+    #         if os.path.exists(tmp_file_path):
+    #             os.unlink(tmp_file_path)
 
 @app.post("/query", response_model=QueryResponse)
 async def query_rag_from_pinecone_api(query: str):
