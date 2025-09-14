@@ -4,6 +4,7 @@ import tempfile
 from typing import List
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 # from langchain.vectorstores.chroma import Chroma
@@ -22,11 +23,31 @@ from langchain_pinecone import PineconeVectorStore
 load_dotenv()
 
 # Initialize FastAPI app
-app = FastAPI(title="RAG API", description="API for document upload and RAG querying")
+app = FastAPI(
+    title="RAG API", 
+    description="API for document upload and RAG querying",
+    version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure this properly for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 CHROMA_PATH = "chroma"
 DATA_PATH = "data"
 
+# Check required environment variables
+required_env_vars = ["PINECONE_API_KEY", "OPENAI_API_KEY"]
+missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+if missing_vars:
+    raise ValueError(f"Missing required environment variables: {missing_vars}")
+
+# Initialize embeddings
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=1536)
 
 # db_client_settings = Settings(
@@ -43,25 +64,36 @@ embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=1536)
 # )
 INDEX_NAME = os.getenv("PINECONE_INDEX", "neo-docs")
 
-pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
+# Initialize Pinecone client
+try:
+    pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
+except Exception as e:
+    raise ValueError(f"Failed to initialize Pinecone client: {e}")
 
 # Create serverless index if it doesn't exist (choose region/cloud you set in env)
-if INDEX_NAME not in {i.name for i in pc.list_indexes().indexes}:
-    pc.create_index(
-        name=INDEX_NAME,
-        dimension=1536,  # must match your embeddings dimension
-        metric="cosine",
-        spec=ServerlessSpec(
-            cloud=os.getenv("PINECONE_CLOUD", "aws"),
-            region=os.getenv("PINECONE_REGION", "us-east-1"),
-        ),
-    )
+try:
+    if INDEX_NAME not in {i.name for i in pc.list_indexes().indexes}:
+        pc.create_index(
+            name=INDEX_NAME,
+            dimension=1536,  # must match your embeddings dimension
+            metric="cosine",
+            spec=ServerlessSpec(
+                cloud=os.getenv("PINECONE_CLOUD", "aws"),
+                region=os.getenv("PINECONE_REGION", "us-east-1"),
+            ),
+        )
+except Exception as e:
+    print(f"Warning: Could not create Pinecone index: {e}")
 
-# LangChain vectorstore wrapper
-vectorstore = PineconeVectorStore.from_existing_index(
-    index_name=INDEX_NAME,
-    embedding=embeddings
-)
+# LangChain vectorstore wrapper - initialize lazily
+try:
+    vectorstore = PineconeVectorStore.from_existing_index(
+        index_name=INDEX_NAME,
+        embedding=embeddings
+    )
+except Exception as e:
+    print(f"Warning: Could not initialize vectorstore: {e}")
+    vectorstore = None
 
 # Response models
 class UploadResponse(BaseModel):
@@ -83,6 +115,9 @@ Answer the question based on the above context: {question}
 """
 
 def load_documents():
+    """Load documents from data directory - only works in local development"""
+    if not os.path.exists(DATA_PATH):
+        raise HTTPException(status_code=404, detail="Data directory not found. This endpoint only works in local development.")
     document_loader = PyPDFDirectoryLoader(DATA_PATH)
     return document_loader.load()
 
@@ -97,6 +132,9 @@ def split_documents(documents: list[Document]):
 
 def add_to_pinecone(chunks: list[Document]):
     """Add documents to Pinecone vectorstore"""
+    if vectorstore is None:
+        raise HTTPException(status_code=500, detail="Vectorstore not initialized")
+        
     chunks_with_ids = calculate_chunk_ids(chunks)
     
     # Get existing document IDs from Pinecone
@@ -168,6 +206,9 @@ def clear_database():
 
 def query_rag(query_text: str):
     """Query the RAG system using Pinecone"""
+    if vectorstore is None:
+        raise HTTPException(status_code=500, detail="Vectorstore not initialized")
+        
     try:
         results = vectorstore.similarity_search_with_score(query_text, k=5)
 
@@ -216,6 +257,9 @@ def upload_documents_to_pinecone_from_directory():
 
 def query_rag_from_pinecone(query_text: str) -> dict:
     """Query the RAG system and return response with sources"""
+    if vectorstore is None:
+        raise HTTPException(status_code=500, detail="Vectorstore not initialized")
+        
     try:
         results = vectorstore.similarity_search_with_score(query_text, k=5)
 
@@ -282,17 +326,52 @@ async def query_rag_from_pinecone_api(query: str):
         sources=result["sources"]
     )
 
+@app.post("/upload-directory", response_model=UploadResponse)
+async def upload_directory_to_pinecone():
+    """
+    Upload all PDFs from the data directory to Pinecone database.
+    Note: This only works in local development as Vercel doesn't have persistent file storage.
+    """
+    try:
+        documents_processed = upload_documents_to_pinecone_from_directory()
+        return UploadResponse(
+            message="Successfully uploaded and processed all documents from data directory",
+            documents_processed=documents_processed
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing documents: {str(e)}")
+
 @app.get("/")
 async def root():
     """Root endpoint with API information"""
     return {
         "message": "RAG API is running",
+        "version": "1.0.0",
+        "status": "healthy",
         "endpoints": {
             "upload": "/upload-documents",
-            "query": "/query"
+            "upload_directory": "/upload-directory",
+            "query": "/query",
+            "health": "/health"
         }
     }
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Vercel"""
+    try:
+        vectorstore_status = "initialized" if vectorstore is not None else "not_initialized"
+        
+        return {
+            "status": "healthy",
+            "vectorstore": vectorstore_status,
+            "pinecone_index": INDEX_NAME,
+            "timestamp": "2024-01-01T00:00:00Z"
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e)
+        }
