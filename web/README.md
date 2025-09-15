@@ -162,11 +162,3 @@ The app can be deployed to any platform that supports Next.js:
 ## License
 
 This project is licensed under the MIT License.
-
-## Support
-
-For support, email support@neolearn.com or create an issue in the repository.
-
----
-
-Built with ❤️ for better learning experiences.

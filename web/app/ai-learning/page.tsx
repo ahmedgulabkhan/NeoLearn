@@ -1,8 +1,10 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState } from 'react'
 import AuthGuard from '@/components/AuthGuard'
-import { Upload, Send, FileText, MessageCircle, X, Bot, User } from 'lucide-react'
+import FileUpload from '@/components/FileUpload'
+import { Send, MessageCircle, Bot, User } from 'lucide-react'
 
 interface Message {
   id: string
@@ -12,37 +14,37 @@ interface Message {
 }
 
 export default function AILearning() {
-  const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
+  const [uploadedFiles, setUploadedFiles] = useState<string[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [inputMessage, setInputMessage] = useState('')
-  const [isUploading, setIsUploading] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [documentsProcessed, setDocumentsProcessed] = useState(0)
 
-  const handleFileUpload = async (files: FileList | null) => {
-    if (!files) return
-
-    setIsUploading(true)
+  const handleUploadSuccess = (data: any) => {
+    setUploadedFiles(prev => [...prev, data.filename])
+    setDocumentsProcessed(data.documents_processed)
     
-    // Simulate file upload processing
-    await new Promise(resolve => setTimeout(resolve, 2000))
-    
-    const newFiles = Array.from(files).filter(file => file.type === 'application/pdf')
-    setUploadedFiles(prev => [...prev, ...newFiles])
-    setIsUploading(false)
-
     // Add welcome message
     const welcomeMessage: Message = {
       id: Date.now().toString(),
-      text: `Great! I've processed ${newFiles.length} PDF file(s). I can now help you understand the content. What would you like to know?`,
+      text: `Great! I've processed your PDF file "${data.filename}" into ${data.documents_processed} document chunks. I can now help you understand the content. What would you like to know?`,
       isUser: false,
       timestamp: new Date()
     }
     setMessages(prev => [...prev, welcomeMessage])
   }
 
+  const handleUploadError = (error: string) => {
+    console.error('Upload error:', error)
+    // You could add error handling UI here if needed
+  }
+
   const handleSendMessage = async () => {
-    if (!inputMessage.trim() || uploadedFiles.length === 0) return
+    console.log('handleSendMessage called with:', { inputMessage, uploadedFiles })
+    if (!inputMessage.trim() || uploadedFiles.length === 0) {
+      console.log('Early return - no message or no files')
+      return
+    }
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -52,25 +54,63 @@ export default function AILearning() {
     }
 
     setMessages(prev => [...prev, userMessage])
+    const currentMessage = inputMessage
     setInputMessage('')
     setIsProcessing(true)
 
-    // Simulate AI response
-    await new Promise(resolve => setTimeout(resolve, 1500))
+    try {
+      console.log('Sending message to AI chat API:', currentMessage)
+      
+      // Send message to AI chat API
+      const response = await fetch('/api/ai-chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: currentMessage
+        })
+      })
 
-    const aiResponse: Message = {
-      id: (Date.now() + 1).toString(),
-      text: "I understand your question about the uploaded material. Based on the content I've analyzed, here's what I can tell you... (This is a simulated response. In a real implementation, this would connect to your AI service to process the PDF content and generate contextual responses.)",
-      isUser: false,
-      timestamp: new Date()
+      console.log('API response status:', response.status)
+      const result = await response.json()
+      console.log('API response data:', result)
+
+      if (result.success) {
+        const aiResponse: Message = {
+          id: (Date.now() + 1).toString(),
+          text: result.response,
+          isUser: false,
+          timestamp: new Date()
+        }
+        setMessages(prev => [...prev, aiResponse])
+      } else {
+        const errorResponse: Message = {
+          id: (Date.now() + 1).toString(),
+          text: `Sorry, I encountered an error: ${result.error}. Please try again.`,
+          isUser: false,
+          timestamp: new Date()
+        }
+        setMessages(prev => [...prev, errorResponse])
+      }
+    } catch (error) {
+      console.error('Fetch error:', error)
+      const errorResponse: Message = {
+        id: (Date.now() + 1).toString(),
+        text: "Sorry, I'm having trouble connecting to the AI service. Please check your connection and try again.",
+        isUser: false,
+        timestamp: new Date()
+      }
+      setMessages(prev => [...prev, errorResponse])
     }
 
-    setMessages(prev => [...prev, aiResponse])
     setIsProcessing(false)
   }
 
-  const removeFile = (index: number) => {
-    setUploadedFiles(prev => prev.filter((_, i) => i !== index))
+  const clearFiles = () => {
+    setUploadedFiles([])
+    setMessages([])
+    setDocumentsProcessed(0)
   }
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -96,69 +136,40 @@ export default function AILearning() {
             {/* Upload Section */}
             <div className="lg:col-span-1">
               <div className="bg-white rounded-2xl shadow-lg p-6">
-                <h2 className="text-xl font-semibold text-gray-900 mb-4 flex items-center">
-                  <FileText className="h-5 w-5 mr-2 text-gray-700" />
-                  Upload Materials
-                </h2>
-
-                {uploadedFiles.length === 0 ? (
-                  <div
-                    className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-gray-400 transition-colors cursor-pointer"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Upload className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                    <p className="text-gray-600 mb-2">Click to upload PDF files</p>
-                    <p className="text-sm text-gray-500">or drag and drop them here</p>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      multiple
-                      accept=".pdf"
-                      onChange={(e) => handleFileUpload(e.target.files)}
-                      className="hidden"
-                    />
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {uploadedFiles.map((file, index) => (
-                      <div key={index} className="flex items-center justify-between bg-gray-50 rounded-lg p-3">
-                        <div className="flex items-center">
-                          <FileText className="h-4 w-4 text-gray-600 mr-2" />
-                          <span className="text-sm text-gray-700 truncate max-w-32">
-                            {file.name}
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => removeFile(index)}
-                          className="text-gray-400 hover:text-gray-600 transition-colors"
-                        >
-                          <X className="h-4 w-4" />
-                        </button>
-                      </div>
-                    ))}
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-semibold text-gray-900 flex items-center">
+                    Upload Materials
+                  </h2>
+                  {uploadedFiles.length > 0 && (
                     <button
-                      onClick={() => fileInputRef.current?.click()}
-                      className="w-full border-2 border-dashed border-gray-300 rounded-lg p-3 text-gray-600 hover:border-gray-400 hover:text-gray-700 transition-colors"
+                      onClick={clearFiles}
+                      className="text-sm text-gray-500 hover:text-gray-700 transition-colors"
                     >
-                      + Add more files
+                      Clear All
                     </button>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      multiple
-                      accept=".pdf"
-                      onChange={(e) => handleFileUpload(e.target.files)}
-                      className="hidden"
-                    />
-                  </div>
-                )}
+                  )}
+                </div>
 
-                {isUploading && (
-                  <div className="mt-4 text-center">
-                    <div className="inline-flex items-center text-gray-600">
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 mr-2"></div>
-                      Processing files...
-                    </div>
+                <FileUpload
+                  onUploadSuccess={handleUploadSuccess}
+                  onUploadError={handleUploadError}
+                  disabled={uploadedFiles.length > 0}
+                />
+
+                {uploadedFiles.length > 0 && (
+                  <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                    <h3 className="font-medium text-gray-900 mb-2">Uploaded Files:</h3>
+                    <ul className="space-y-1">
+                      {uploadedFiles.map((filename, index) => (
+                        <li key={index} className="text-sm text-gray-600 flex items-center">
+                          <span className="w-2 h-2 bg-green-500 rounded-full mr-2"></span>
+                          {filename}
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="text-xs text-gray-500 mt-2">
+                      {documentsProcessed} document chunks processed
+                    </p>
                   </div>
                 )}
               </div>
@@ -203,7 +214,7 @@ export default function AILearning() {
                               <Bot className="h-5 w-5 text-gray-600 mr-2 mt-0.5 flex-shrink-0" />
                             )}
                             <div className="flex-1">
-                              <p className="text-sm">{message.text}</p>
+                              <p className="text-sm" style={{ whiteSpace: "pre-line" }}>{message.text}</p>
                               <p className={`text-xs mt-1 ${
                                 message.isUser ? 'text-gray-300' : 'text-gray-500'
                               }`}>
@@ -249,10 +260,13 @@ export default function AILearning() {
                           : "Ask a question about your materials..."
                       }
                       disabled={uploadedFiles.length === 0 || isProcessing}
-                      className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed"
+                      className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed text-gray-900 bg-white"
                     />
                     <button
-                      onClick={handleSendMessage}
+                      onClick={() => {
+                        console.log('Send button clicked')
+                        handleSendMessage()
+                      }}
                       disabled={!inputMessage.trim() || uploadedFiles.length === 0 || isProcessing}
                       className="bg-gray-800 text-white px-6 py-3 rounded-lg hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
