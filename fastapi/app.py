@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import asyncio
 import traceback
+import json
 from typing import List
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
@@ -99,6 +100,22 @@ class QueryResponse(BaseModel):
     response: str
     sources: List[str]
 
+class FlashcardRequest(BaseModel):
+    topic: str
+    num_flashcards: int = 10
+    difficulty: str = "medium"  # easy, medium, hard
+
+class Flashcard(BaseModel):
+    question: str
+    answer: str
+    topic: str
+    difficulty: str
+
+class FlashcardResponse(BaseModel):
+    flashcards: List[Flashcard]
+    topic: str
+    sources: List[str]
+
 PROMPT_TEMPLATE = """
 Answer the question based only on the following context:
 
@@ -107,6 +124,33 @@ Answer the question based only on the following context:
 ---
 
 Answer the question based on the above context: {question}
+"""
+
+FLASHCARD_PROMPT_TEMPLATE = """
+Based on the following context from uploaded documents, generate {num_flashcards} flashcards about {topic} at {difficulty} difficulty level.
+
+Context:
+{context}
+
+---
+
+Generate exactly {num_flashcards} flashcards about "{topic}" with {difficulty} difficulty. Each flashcard should:
+1. Have a clear, concise question
+2. Have a comprehensive but focused answer
+3. Be based strictly on the provided context
+4. Be appropriate for {difficulty} difficulty level
+
+Format your response as a JSON array of objects, where each object has "question" and "answer" fields:
+
+[
+  {{
+    "question": "Your question here",
+    "answer": "Your answer here"
+  }},
+  ...
+]
+
+Ensure the JSON is valid and contains exactly {num_flashcards} flashcards.
 """
 
 def load_documents():
@@ -315,6 +359,81 @@ def query_rag_from_pinecone(query_text: str) -> dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error querying RAG: {str(e)}")
 
+def generate_flashcards_from_rag(topic: str, num_flashcards: int = 10, difficulty: str = "medium") -> dict:
+    """Generate flashcards for a specific topic using RAG system"""
+    if vectorstore is None:
+        raise HTTPException(status_code=500, detail="Vectorstore not initialized")
+        
+    try:
+        # Search for relevant content based on the topic
+        search_query = f"content related to {topic}"
+        results = vectorstore.similarity_search_with_score(search_query, k=num_flashcards)
+
+        if not results:
+            raise HTTPException(status_code=404, detail=f"No relevant content found for topic: {topic}")
+
+        # Combine context from multiple relevant documents
+        context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
+        
+        # Create flashcard generation prompt
+        prompt_template = ChatPromptTemplate.from_template(FLASHCARD_PROMPT_TEMPLATE)
+        prompt = prompt_template.format(
+            context=context_text, 
+            topic=topic,
+            num_flashcards=num_flashcards,
+            difficulty=difficulty
+        )
+
+        # Generate flashcards using OpenAI
+        model = ChatOpenAI(model="gpt-4o", temperature=0.7)
+        response_text = model.invoke(prompt)
+        
+        # Parse the JSON response
+        try:
+            flashcards_data = json.loads(str(response_text).strip())
+            if not isinstance(flashcards_data, list):
+                raise ValueError("Response is not a list")
+        except (json.JSONDecodeError, ValueError) as e:
+            # Fallback: try to extract JSON from the response
+            response_str = str(response_text)
+            start_idx = response_str.find('[')
+            end_idx = response_str.rfind(']') + 1
+            if start_idx != -1 and end_idx != 0:
+                try:
+                    print("response_str: " + response_str)
+                    print("response_str[start_idx:end_idx]: " + response_str[start_idx:end_idx])
+                    fixed_str = response_str[start_idx:end_idx].encode('utf-8').decode('unicode_escape')
+                    flashcards_data = json.loads(fixed_str)
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=500, detail="Failed to parse flashcards from AI response")
+            else:
+                return {
+                    "flashcards": [],
+                    "topic": topic,
+                    "sources": []
+                }
+
+        # Convert to Flashcard objects
+        flashcards = []
+        for item in flashcards_data[:num_flashcards]:  # Ensure we don't exceed requested number
+            if isinstance(item, dict) and "question" in item and "answer" in item:
+                flashcards.append(Flashcard(
+                    question=item["question"],
+                    answer=item["answer"],
+                    topic=topic,
+                    difficulty=difficulty
+                ))
+
+        sources = [doc.metadata.get("id", None) for doc, _score in results]
+        
+        return {
+            "flashcards": flashcards,
+            "topic": topic,
+            "sources": sources
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating flashcards: {str(e)}")
+
 # API Endpoints
 @app.post("/upload-documents", response_model=UploadResponse)
 async def upload_documents_to_pinecone(file: UploadFile = File(...)):
@@ -378,6 +497,39 @@ async def query_rag_from_pinecone_api(query: str):
         sources=result["sources"]
     )
 
+@app.post("/generate-flashcards", response_model=FlashcardResponse)
+async def generate_flashcards_api(request: FlashcardRequest):
+    """
+    Generate flashcards for a specific topic from uploaded PDF documents.
+    
+    Parameters:
+    - topic: The subject/topic for which to generate flashcards
+    - num_flashcards: Number of flashcards to generate (default: 10)
+    - difficulty: Difficulty level - easy, medium, or hard (default: medium)
+    
+    Returns flashcards with questions and answers based on the uploaded document content.
+    """
+    if not request.topic.strip():
+        raise HTTPException(status_code=400, detail="Topic cannot be empty")
+    
+    if request.num_flashcards < 1 or request.num_flashcards > 10:
+        raise HTTPException(status_code=400, detail="Number of flashcards must be between 1 and 10")
+    
+    if request.difficulty not in ["easy", "medium", "hard"]:
+        raise HTTPException(status_code=400, detail="Difficulty must be 'easy', 'medium', or 'hard'")
+    
+    result = generate_flashcards_from_rag(
+        topic=request.topic,
+        num_flashcards=request.num_flashcards,
+        difficulty=request.difficulty
+    )
+    
+    return FlashcardResponse(
+        flashcards=result["flashcards"],
+        topic=result["topic"],
+        sources=result["sources"]
+    )
+
 @app.get("/")
 async def root():
     """Root endpoint with API information"""
@@ -387,8 +539,8 @@ async def root():
         "status": "healthy",
         "endpoints": {
             "upload": "/upload-documents",
-            "upload_directory": "/upload-directory",
             "query": "/query",
+            "generate_flashcards": "/generate-flashcards",
             "health": "/health"
         }
     }
