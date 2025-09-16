@@ -1,6 +1,7 @@
 import os
 import shutil
 import tempfile
+import asyncio
 import traceback
 from typing import List
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -343,6 +344,8 @@ async def upload_documents_to_pinecone(file: UploadFile = File(...)):
         # Now the file is closed and fully on disk; process it
         documents_processed = upload_documents_to_pinecone_from_file(tmp_file_path)
 
+        await asyncio.sleep(5)
+
         return UploadResponse(
             message=f"Successfully uploaded and processed {file.filename}",
             documents_processed=documents_processed
@@ -374,23 +377,6 @@ async def query_rag_from_pinecone_api(query: str):
         response=result["response"],
         sources=result["sources"]
     )
-
-@app.post("/upload-directory", response_model=UploadResponse)
-async def upload_directory_to_pinecone():
-    """
-    Upload all PDFs from the data directory to Pinecone database.
-    Note: This only works in local development as Vercel doesn't have persistent file storage.
-    """
-    try:
-        documents_processed = upload_documents_to_pinecone_from_directory()
-        return UploadResponse(
-            message="Successfully uploaded and processed all documents from data directory",
-            documents_processed=documents_processed
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing documents: {str(e)}")
 
 @app.get("/")
 async def root():

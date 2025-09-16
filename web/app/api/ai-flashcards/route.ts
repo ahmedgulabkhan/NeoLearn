@@ -16,14 +16,11 @@ export async function POST(request: NextRequest) {
 Focus on key concepts, important definitions, and essential information that would be valuable for studying and memorization. Format the response as structured flashcards with clear front/back content.`
 
     // Send query to FastAPI backend
-    const response = await fetch(`${FASTAPI_BASE_URL}/query`, {
+    const response = await fetch(`${FASTAPI_BASE_URL}/query?query=${flashcardQuery}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        query: flashcardQuery
-      })
+      }
     })
 
     if (!response.ok) {
@@ -41,6 +38,8 @@ Focus on key concepts, important definitions, and essential information that wou
     
     // Parse the AI response to extract flashcards
     const flashcardsResponse = result.response
+
+    console.log(flashcardsResponse + "is the flashcardsResponse")
     
     // For now, return the raw response and let the frontend handle parsing
     // In a production app, you'd want to parse this into a structured format
