@@ -5,11 +5,12 @@ import React, { useState } from 'react'
 import AuthGuard from '@/components/AuthGuard'
 import FileUpload from '@/components/FileUpload'
 import { Brain, RotateCcw, CheckCircle, XCircle, ArrowLeft, ArrowRight, Shuffle } from 'lucide-react'
+import { v4 as uuidv4 } from 'uuid';
 
 interface Flashcard {
   id: string
-  front: string
-  back: string
+  question: string
+  answer: string
   category: string
   difficulty: 'easy' | 'medium' | 'hard'
 }
@@ -53,11 +54,7 @@ export default function AIFlashcards() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          cardCount: 8,
-          difficulty: 'mixed'
-        })
+        }
       })
 
       const result = await response.json()
@@ -67,7 +64,7 @@ export default function AIFlashcards() {
         const aiGeneratedFlashcards: FlashcardSet = {
           id: Date.now().toString(),
           title: `AI Flashcards from ${uploadedFiles[0]}`,
-          totalCards: 8,
+          totalCards: 5,
           cards: parseFlashcardsFromAI(result.rawResponse) // You can enhance this parsing function
         }
 
@@ -88,17 +85,17 @@ export default function AIFlashcards() {
           cards: [
             {
               id: '1',
-              front: 'AI Service Status',
-              back: 'The AI flashcard generation service encountered an error. Please check your connection and try again.',
+              question: 'AI Service Status',
+              answer: 'The AI flashcard generation service encountered an error. Please check your connection and try again.',
               category: 'System',
               difficulty: 'easy'
             },
             {
               id: '2',
-              front: 'What should you do next?',
-              back: 'Verify that the FastAPI backend is running, check your internet connection, and ensure the PDF was uploaded successfully.',
+              question: 'What should you do next?',
+              answer: 'Verify that the FastAPI backend is running, check your internet connection, and ensure the PDF was uploaded successfully.',
               category: 'Troubleshooting',
-              difficulty: 'medium'
+              difficulty: 'easy'
             }
           ]
         }
@@ -120,8 +117,8 @@ export default function AIFlashcards() {
         cards: [
           {
             id: '1',
-            front: 'Connection Error',
-            back: 'Failed to connect to the AI service. Please check that the FastAPI backend is running and try again.',
+            question: 'Connection Error',
+            answer: 'Failed to connect to the AI service. Please check that the FastAPI backend is running and try again.',
             category: 'Error',
             difficulty: 'easy'
           }
@@ -140,39 +137,17 @@ export default function AIFlashcards() {
   }
 
   // Helper function to parse AI response into flashcards format
-  const parseFlashcardsFromAI = (aiResponse: string): Flashcard[] => {
+  const parseFlashcardsFromAI = (aiResponse: {question: string, answer: string, difficulty: string}[]): Flashcard[] => {
     // This is a basic parser - you can enhance this based on the actual AI response format
     // For now, return some sample flashcards that indicate the AI response was received
-    return [
-      {
-        id: '1',
-        front: 'AI Analysis Result',
-        back: `The AI has successfully analyzed your document. Here's a preview of the response: ${aiResponse.substring(0, 150)}...`,
-        category: 'AI Generated',
-        difficulty: 'medium'
-      },
-      {
-        id: '2',
-        front: 'Document Content',
-        back: 'Your uploaded PDF has been processed and the AI has extracted key concepts for learning.',
-        category: 'Content',
-        difficulty: 'easy'
-      },
-      {
-        id: '3',
-        front: 'Next Steps',
-        back: 'To get better structured flashcards, enhance the AI response parsing logic to extract specific terms and definitions.',
-        category: 'Development',
-        difficulty: 'hard'
-      },
-      {
-        id: '4',
-        front: 'AI Integration Status',
-        back: 'The flashcard generation is working! The AI service is connected and responding with content based on your uploaded document.',
-        category: 'System',
-        difficulty: 'medium'
-      }
-    ]
+    return aiResponse.map(flashcard => ({
+      id: uuidv4(),
+      question: flashcard.question,
+      answer: flashcard.answer,
+      category: "AI Generated",
+      difficulty: flashcard.difficulty == "easy" ? "easy" : flashcard.difficulty == "medium" ? "medium" : "hard",
+      isFlipped: false 
+    }));
   }
 
   const startStudying = () => {
@@ -314,14 +289,14 @@ export default function AIFlashcards() {
               <div className="space-y-4">
                 <button
                   onClick={resetFlashcards}
-                  className="bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 transition-colors mr-4"
+                  className="bg-purple-600 text-white px-6 py-3 cursor-pointer rounded-lg hover:bg-purple-700 transition-colors mr-4"
                 >
                   <RotateCcw className="h-4 w-4 inline mr-2" />
                   Create New Set
                 </button>
                 <button
                   onClick={startStudying}
-                  className="border border-gray-300 text-gray-700 px-6 py-3 rounded-lg hover:bg-gray-50 transition-colors"
+                  className="border border-gray-300 text-gray-700 px-6 py-3 cursor-pointer rounded-lg hover:bg-gray-50 transition-colors"
                 >
                   Study Again
                 </button>
@@ -347,7 +322,7 @@ export default function AIFlashcards() {
                   <div className="flex items-center space-x-2">
                     <button
                       onClick={shuffleCards}
-                      className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+                      className="p-2 text-gray-400 cursor-pointer hover:text-gray-600 transition-colors"
                       title="Shuffle cards"
                     >
                       <Shuffle className="h-5 w-5" />
@@ -381,7 +356,7 @@ export default function AIFlashcards() {
                         {isFlipped ? 'Answer:' : 'Question:'}
                       </h2>
                       <p className="text-lg text-gray-700 leading-relaxed">
-                        {isFlipped ? card.back : card.front}
+                        {isFlipped ? card.answer : card.question}
                       </p>
                     </div>
                   </div>
@@ -389,7 +364,7 @@ export default function AIFlashcards() {
                   <div className="mt-6 text-center">
                     <button
                       onClick={() => setIsFlipped(!isFlipped)}
-                      className="bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 transition-colors font-semibold"
+                      className="bg-purple-600 text-white px-6 py-3 cursor-pointer rounded-lg hover:bg-purple-700 transition-colors font-semibold"
                     >
                       {isFlipped ? 'Show Question' : 'Show Answer'}
                     </button>
@@ -399,14 +374,14 @@ export default function AIFlashcards() {
                     <div className="mt-6 flex justify-center space-x-4">
                       <button
                         onClick={markIncorrect}
-                        className="flex items-center px-4 py-2 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 transition-colors"
+                        className="flex items-center px-4 py-2 cursor-pointer border border-red-300 text-red-600 rounded-lg hover:bg-red-50 transition-colors"
                       >
                         <XCircle className="h-4 w-4 mr-2" />
                         Incorrect
                       </button>
                       <button
                         onClick={markCorrect}
-                        className="flex items-center px-4 py-2 border border-green-300 text-green-600 rounded-lg hover:bg-green-50 transition-colors"
+                        className="flex items-center px-4 py-2 cursor-pointer border border-green-300 text-green-600 rounded-lg hover:bg-green-50 transition-colors"
                       >
                         <CheckCircle className="h-4 w-4 mr-2" />
                         Correct
@@ -421,14 +396,14 @@ export default function AIFlashcards() {
                 <button
                   onClick={prevCard}
                   disabled={currentCard === 0}
-                  className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="flex items-center px-4 py-2 cursor-pointer border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   <ArrowLeft className="h-4 w-4 mr-2" />
                   Previous
                 </button>
                 <button
                   onClick={nextCard}
-                  className="flex items-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                  className="flex items-center px-4 py-2 cursor-pointer bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
                 >
                   {currentCard === flashcardSet.cards.length - 1 ? 'Finish' : 'Next'}
                   <ArrowRight className="h-4 w-4 ml-2" />
@@ -463,7 +438,7 @@ export default function AIFlashcards() {
                 {uploadedFiles.length > 0 && (
                   <button
                     onClick={clearFiles}
-                    className="text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                    className="text-sm text-gray-500 cursor-pointer hover:text-gray-700 transition-colors"
                   >
                     Clear All
                   </button>
@@ -530,7 +505,7 @@ export default function AIFlashcards() {
                 <button
                   onClick={generateFlashcards}
                   disabled={uploadedFiles.length === 0 || isGenerating}
-                  className="w-full bg-purple-600 text-white py-3 px-6 rounded-lg hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-semibold"
+                  className="w-full bg-purple-600 text-white cursor-pointer py-3 px-6 rounded-lg hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-semibold"
                 >
                   {isGenerating ? (
                     <div className="flex items-center justify-center">

@@ -10,33 +10,27 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-# from langchain.vectorstores.chroma import Chroma
 from langchain.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
-# from langchain.document_loaders.pdf import PyPDFDirectoryLoader, PyPDFLoader
-# from langchain_community.vectorstores import Chroma
 from langchain_community.document_loaders import PyPDFLoader, PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.schema.document import Document
 from langchain.schema import Document as LCDocument
-# from chromadb.config import Settings
 from pinecone import Pinecone, ServerlessSpec
 from langchain_pinecone import PineconeVectorStore
 
 load_dotenv()
 
-# Initialize FastAPI app
 app = FastAPI(
     title="RAG API", 
     description="API for document upload and RAG querying",
     version="1.0.0"
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure this properly for production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -45,13 +39,11 @@ app.add_middleware(
 CHROMA_PATH = "chroma"
 DATA_PATH = "data"
 
-# Check required environment variables
 required_env_vars = ["PINECONE_API_KEY", "OPENAI_API_KEY"]
 missing_vars = [var for var in required_env_vars if not os.getenv(var)]
 if missing_vars:
     raise ValueError(f"Missing required environment variables: {missing_vars}")
 
-# Initialize embeddings
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=1536)
 
 try:
@@ -81,7 +73,6 @@ try:
 except Exception as e:
     print(f"Warning: Could not create Pinecone index: {e}")
 
-# LangChain vectorstore wrapper - initialize lazily
 try:
     vectorstore = PineconeVectorStore.from_existing_index(
         index_name=INDEX_NAME,
@@ -101,19 +92,16 @@ class QueryResponse(BaseModel):
     sources: List[str]
 
 class FlashcardRequest(BaseModel):
-    topic: str
-    num_flashcards: int = 10
+    num_flashcards: int = 5
     difficulty: str = "medium"  # easy, medium, hard
 
 class Flashcard(BaseModel):
     question: str
     answer: str
-    topic: str
     difficulty: str
 
 class FlashcardResponse(BaseModel):
     flashcards: List[Flashcard]
-    topic: str
     sources: List[str]
 
 PROMPT_TEMPLATE = """
@@ -127,14 +115,14 @@ Answer the question based on the above context: {question}
 """
 
 FLASHCARD_PROMPT_TEMPLATE = """
-Based on the following context from uploaded documents, generate {num_flashcards} flashcards about {topic} at {difficulty} difficulty level.
+Based on the following context from uploaded documents, generate {num_flashcards} flashcards about at {difficulty} difficulty level.
 
 Context:
 {context}
 
 ---
 
-Generate exactly {num_flashcards} flashcards about "{topic}" with {difficulty} difficulty. Each flashcard should:
+Generate exactly {num_flashcards} flashcards with {difficulty} difficulty. Each flashcard should:
 1. Have a clear, concise question
 2. Have a comprehensive but focused answer
 3. Be based strictly on the provided context
@@ -204,12 +192,11 @@ def split_documents(documents: list[Document]):
 #     else:
 #         print("No new documents to add")
 
-UPSERT_BATCH = 100  # small batches are safer on serverless
+UPSERT_BATCH = 100
 
 def add_to_pinecone(chunks: List[LCDocument]) -> None:
     chunks = calculate_chunk_ids(chunks)
 
-    # 1) Embed texts explicitly (so errors surface here if any)
     texts = [c.page_content for c in chunks]
     try:
         embeddings_list = embeddings.embed_documents(texts)
@@ -217,27 +204,22 @@ def add_to_pinecone(chunks: List[LCDocument]) -> None:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Embedding failed: {e}")
 
-    # 2) Upsert directly with Pinecone client (skip LangChain wrapper)
     try:
-        # make sure index exists and dims match
         desc = pc.describe_index(INDEX_NAME)
         if desc.dimension != 1536:
             raise HTTPException(status_code=500, detail=f"Pinecone index dim {desc.dimension} != 1536")
 
         index = pc.Index(INDEX_NAME)
 
-        # build vectors
         vectors = []
         for c, emb in zip(chunks, embeddings_list):
             meta = dict(c.metadata or {})
-            # optional: store a short text snippet to keep metadata small
             meta["text"] = c.page_content
             vectors.append({"id": meta["id"], "values": emb, "metadata": meta})
 
-        # batch upsert
         for i in range(0, len(vectors), UPSERT_BATCH):
             batch = vectors[i:i+UPSERT_BATCH]
-            index.upsert(vectors=batch, namespace="")  # set your namespace if you use one
+            index.upsert(vectors=batch, namespace="")
 
         print(f"Successfully added {len(vectors)} documents to Pinecone")
     except Exception as e:
@@ -269,18 +251,15 @@ def calculate_chunk_ids(chunks):
 def clear_database():
     """Clear all documents from Pinecone index"""
     try:
-        # Check if index exists
         if INDEX_NAME not in {i.name for i in pc.list_indexes().indexes}:
             print("Index does not exist, nothing to clear")
             return
         
-        # Delete all vectors from the index
         index = pc.Index(INDEX_NAME)
         index.delete(delete_all=True)
         print("Successfully cleared Pinecone database")
     except Exception as e:
         print(f"Error clearing Pinecone database: {e}")
-        # Don't raise the error for 404 (index not found)
         if "404" not in str(e):
             raise e
 
@@ -301,7 +280,6 @@ def query_rag(query_text: str):
 
         sources = [doc.metadata.get("id", None) for doc, _score in results]
         formatted_response = f"Response: {response_text}\nSources: {sources}"
-        print(formatted_response)
         return response_text
     except Exception as e:
         print(f"Error querying RAG: {e}")
@@ -311,14 +289,11 @@ def upload_documents_to_pinecone_from_file(file_path: str) -> int:
     """Upload a single PDF file to Pinecone database"""
     try:
         clear_database()
-        # Load the PDF document
         loader = PyPDFLoader(file_path)
         documents = loader.load()
         
-        # Split documents into chunks
         chunks = split_documents(documents)
         
-        # Add to Pinecone database
         add_to_pinecone(chunks)
         
         return len(chunks)
@@ -359,49 +334,39 @@ def query_rag_from_pinecone(query_text: str) -> dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error querying RAG: {str(e)}")
 
-def generate_flashcards_from_rag(topic: str, num_flashcards: int = 10, difficulty: str = "medium") -> dict:
-    """Generate flashcards for a specific topic using RAG system"""
+def generate_flashcards_from_rag(num_flashcards: int = 5, difficulty: str = "medium") -> dict:
+    """Generate flashcards for the uploaded documents using RAG system"""
     if vectorstore is None:
         raise HTTPException(status_code=500, detail="Vectorstore not initialized")
         
     try:
-        # Search for relevant content based on the topic
-        search_query = f"content related to {topic}"
-        results = vectorstore.similarity_search_with_score(search_query, k=num_flashcards)
+        results = vectorstore.similarity_search_with_score("", k=10000)
 
         if not results:
-            raise HTTPException(status_code=404, detail=f"No relevant content found for topic: {topic}")
+            raise HTTPException(status_code=404, detail=f"No relevant content found")
 
-        # Combine context from multiple relevant documents
         context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
         
-        # Create flashcard generation prompt
         prompt_template = ChatPromptTemplate.from_template(FLASHCARD_PROMPT_TEMPLATE)
         prompt = prompt_template.format(
             context=context_text, 
-            topic=topic,
             num_flashcards=num_flashcards,
             difficulty=difficulty
         )
 
-        # Generate flashcards using OpenAI
         model = ChatOpenAI(model="gpt-4o", temperature=0.7)
         response_text = model.invoke(prompt)
         
-        # Parse the JSON response
         try:
             flashcards_data = json.loads(str(response_text).strip())
             if not isinstance(flashcards_data, list):
                 raise ValueError("Response is not a list")
         except (json.JSONDecodeError, ValueError) as e:
-            # Fallback: try to extract JSON from the response
             response_str = str(response_text)
             start_idx = response_str.find('[')
             end_idx = response_str.rfind(']') + 1
             if start_idx != -1 and end_idx != 0:
                 try:
-                    print("response_str: " + response_str)
-                    print("response_str[start_idx:end_idx]: " + response_str[start_idx:end_idx])
                     fixed_str = response_str[start_idx:end_idx].encode('utf-8').decode('unicode_escape')
                     flashcards_data = json.loads(fixed_str)
                 except json.JSONDecodeError:
@@ -409,18 +374,15 @@ def generate_flashcards_from_rag(topic: str, num_flashcards: int = 10, difficult
             else:
                 return {
                     "flashcards": [],
-                    "topic": topic,
                     "sources": []
                 }
 
-        # Convert to Flashcard objects
         flashcards = []
-        for item in flashcards_data[:num_flashcards]:  # Ensure we don't exceed requested number
+        for item in flashcards_data[:num_flashcards]:
             if isinstance(item, dict) and "question" in item and "answer" in item:
                 flashcards.append(Flashcard(
                     question=item["question"],
                     answer=item["answer"],
-                    topic=topic,
                     difficulty=difficulty
                 ))
 
@@ -428,7 +390,6 @@ def generate_flashcards_from_rag(topic: str, num_flashcards: int = 10, difficult
         
         return {
             "flashcards": flashcards,
-            "topic": topic,
             "sources": sources
         }
     except Exception as e:
@@ -441,17 +402,13 @@ async def upload_documents_to_pinecone(file: UploadFile = File(...)):
     Upload a PDF file to the Pinecone database.
     The file will be processed, split into chunks, and added to the vector store.
     """
-    # Check if file is PDF
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="File must be a PDF")
     
-    # Create temporary file to save uploaded PDF
     tmp_file_path = None
     try:
-        # Always write into /tmp on Vercel and close before processing
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf", dir="/tmp") as tmp_file:
             tmp_file_path = tmp_file.name
-            # stream in chunks (avoid reading whole file into RAM)
             while True:
                 chunk = await file.read(1024 * 1024)  # 1 MB
                 if not chunk:
@@ -460,7 +417,6 @@ async def upload_documents_to_pinecone(file: UploadFile = File(...)):
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
 
-        # Now the file is closed and fully on disk; process it
         documents_processed = upload_documents_to_pinecone_from_file(tmp_file_path)
 
         await asyncio.sleep(5)
@@ -471,7 +427,6 @@ async def upload_documents_to_pinecone(file: UploadFile = File(...)):
         )
 
     except FileNotFoundError as e:
-        # Path doesn't exist OR your processing code tried to call a missing binary
         raise HTTPException(status_code=400, detail=f"Error Processing PDF: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error Processing PDF: {e}")
@@ -500,33 +455,27 @@ async def query_rag_from_pinecone_api(query: str):
 @app.post("/generate-flashcards", response_model=FlashcardResponse)
 async def generate_flashcards_api(request: FlashcardRequest):
     """
-    Generate flashcards for a specific topic from uploaded PDF documents.
+    Generate flashcards from uploaded PDF documents.
     
     Parameters:
-    - topic: The subject/topic for which to generate flashcards
-    - num_flashcards: Number of flashcards to generate (default: 10)
+    - num_flashcards: Number of flashcards to generate (default: 5)
     - difficulty: Difficulty level - easy, medium, or hard (default: medium)
     
     Returns flashcards with questions and answers based on the uploaded document content.
     """
-    if not request.topic.strip():
-        raise HTTPException(status_code=400, detail="Topic cannot be empty")
-    
-    if request.num_flashcards < 1 or request.num_flashcards > 10:
-        raise HTTPException(status_code=400, detail="Number of flashcards must be between 1 and 10")
+    if request.num_flashcards < 1 or request.num_flashcards > 5:
+        raise HTTPException(status_code=400, detail="Number of flashcards must be between 1 and 5")
     
     if request.difficulty not in ["easy", "medium", "hard"]:
         raise HTTPException(status_code=400, detail="Difficulty must be 'easy', 'medium', or 'hard'")
     
     result = generate_flashcards_from_rag(
-        topic=request.topic,
         num_flashcards=request.num_flashcards,
         difficulty=request.difficulty
     )
     
     return FlashcardResponse(
         flashcards=result["flashcards"],
-        topic=result["topic"],
         sources=result["sources"]
     )
 
