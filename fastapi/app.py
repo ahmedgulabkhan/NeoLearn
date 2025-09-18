@@ -36,7 +36,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CHROMA_PATH = "chroma"
 DATA_PATH = "data"
 
 required_env_vars = ["PINECONE_API_KEY", "OPENAI_API_KEY"]
@@ -342,16 +341,6 @@ def upload_documents_to_pinecone_from_file(file_path: str) -> int:
         return len(chunks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error Processing PDF: {str(e)}")
-
-def upload_documents_to_pinecone_from_directory():
-    """Upload all PDFs from the data directory to Pinecone database"""
-    try:
-        documents = load_documents()
-        chunks = split_documents(documents)
-        add_to_pinecone(chunks)
-        return len(chunks)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing documents: {str(e)}")
 
 def query_rag_from_pinecone(query_text: str) -> dict:
     """Query the RAG system and return response with sources"""
