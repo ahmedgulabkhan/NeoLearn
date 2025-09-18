@@ -93,7 +93,7 @@ class QueryResponse(BaseModel):
 
 class FlashcardRequest(BaseModel):
     num_flashcards: int = 5
-    difficulty: str = "medium"  # easy, medium, hard
+    difficulty: str = "easy" # easy, medium, hard
 
 class Flashcard(BaseModel):
     question: str
@@ -102,6 +102,20 @@ class Flashcard(BaseModel):
 
 class FlashcardResponse(BaseModel):
     flashcards: List[Flashcard]
+    sources: List[str]
+
+class QuizRequest(BaseModel):
+    num_questions: int = 8
+    difficulty: str = "easy"  # easy, medium, hard
+
+class QuizQuestion(BaseModel):
+    question: str
+    options: List[str]  # 4 options
+    correct_answer: str
+    difficulty: str
+
+class QuizResponse(BaseModel):
+    questions: List[QuizQuestion]
     sources: List[str]
 
 PROMPT_TEMPLATE = """
@@ -139,6 +153,35 @@ Format your response as a JSON array of objects, where each object has "question
 ]
 
 Ensure the JSON is valid and contains exactly {num_flashcards} flashcards.
+"""
+
+QUIZ_PROMPT_TEMPLATE = """
+Based on the following context from uploaded documents, generate {num_questions} multiple-choice quiz questions at {difficulty} difficulty level.
+
+Context:
+{context}
+
+---
+
+Generate exactly {num_questions} multiple-choice questions with {difficulty} difficulty. Each question should:
+1. Have a clear, specific question based strictly on the provided context
+2. Have exactly 4 answer options (A, B, C, D)
+3. Have one correct answer among the 4 options
+4. Be appropriate for {difficulty} difficulty level
+5. Test understanding of key concepts from the context
+
+Format your response as a JSON array of objects, where each object has "question", "options" (array of 4 strings), and "correct_answer" (the exact text of the correct option) fields:
+
+[
+  {{
+    "question": "Your question here?",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correct_answer": "Option B"
+  }},
+  ...
+]
+
+Ensure the JSON is valid and contains exactly {num_questions} questions. Make sure the correct_answer exactly matches one of the options.
 """
 
 def load_documents():
@@ -395,6 +438,84 @@ def generate_flashcards_from_rag(num_flashcards: int = 5, difficulty: str = "med
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating flashcards: {str(e)}")
 
+def generate_quiz_from_rag(num_questions: int = 8, difficulty: str = "medium") -> dict:
+    """Generate quiz questions from uploaded documents using RAG system"""
+    if vectorstore is None:
+        raise HTTPException(status_code=500, detail="Vectorstore not initialized")
+        
+    try:
+        # Get relevant documents from the vector store
+        results = vectorstore.similarity_search_with_score("", k=10000)
+
+        if not results:
+            raise HTTPException(status_code=404, detail="No relevant content found")
+
+        # Combine context from multiple documents
+        context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
+        
+        # Create prompt for quiz generation
+        prompt_template = ChatPromptTemplate.from_template(QUIZ_PROMPT_TEMPLATE)
+        prompt = prompt_template.format(
+            context=context_text, 
+            num_questions=num_questions,
+            difficulty=difficulty
+        )
+
+        # Generate quiz using OpenAI
+        model = ChatOpenAI(model="gpt-4o", temperature=0.7)
+        response_text = model.invoke(prompt)
+        
+        # Parse the JSON response
+        try:
+            quiz_data = json.loads(str(response_text).strip())
+            if not isinstance(quiz_data, list):
+                raise ValueError("Response is not a list")
+        except (json.JSONDecodeError, ValueError) as e:
+            # Try to extract JSON from response if it's wrapped in other text
+            response_str = str(response_text)
+            start_idx = response_str.find('[')
+            end_idx = response_str.rfind(']') + 1
+            if start_idx != -1 and end_idx != 0:
+                try:
+                    fixed_str = response_str[start_idx:end_idx].encode('utf-8').decode('unicode_escape')
+                    quiz_data = json.loads(fixed_str)
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=500, detail="Failed to parse quiz questions from AI response")
+            else:
+                return {
+                    "questions": [],
+                    "sources": []
+                }
+
+        # Create QuizQuestion objects
+        questions = []
+        for item in quiz_data[:num_questions]:
+            if isinstance(item, dict) and "question" in item and "options" in item and "correct_answer" in item:
+                # Validate that we have exactly 4 options
+                if len(item["options"]) != 4:
+                    continue
+                    
+                # Validate that correct_answer is one of the options
+                if item["correct_answer"] not in item["options"]:
+                    continue
+                    
+                questions.append(QuizQuestion(
+                    question=item["question"],
+                    options=item["options"],
+                    correct_answer=item["correct_answer"],
+                    difficulty=difficulty
+                ))
+
+        # Get source information
+        sources = [doc.metadata.get("id", None) for doc, _score in results]
+        
+        return {
+            "questions": questions,
+            "sources": sources
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating quiz: {str(e)}")
+
 # API Endpoints
 @app.post("/upload-documents", response_model=UploadResponse)
 async def upload_documents_to_pinecone(file: UploadFile = File(...)):
@@ -459,7 +580,7 @@ async def generate_flashcards_api(request: FlashcardRequest):
     
     Parameters:
     - num_flashcards: Number of flashcards to generate (default: 5)
-    - difficulty: Difficulty level - easy, medium, or hard (default: medium)
+    - difficulty: Difficulty level - easy, medium, or hard (default: easy)
     
     Returns flashcards with questions and answers based on the uploaded document content.
     """
@@ -479,6 +600,33 @@ async def generate_flashcards_api(request: FlashcardRequest):
         sources=result["sources"]
     )
 
+@app.post("/generate-quiz", response_model=QuizResponse)
+async def generate_quiz_api(request: QuizRequest):
+    """
+    Generate a quiz from uploaded PDF documents.
+    
+    Parameters:
+    - num_questions: Number of quiz questions to generate (default: 8)
+    - difficulty: Difficulty level - easy, medium, or hard (default: easy)
+    
+    Returns quiz questions with multiple choice options and correct answers based on the uploaded document content.
+    """
+    if request.num_questions < 1 or request.num_questions > 8:
+        raise HTTPException(status_code=400, detail="Number of questions must be between 1 and 8")
+    
+    if request.difficulty not in ["easy", "medium", "hard"]:
+        raise HTTPException(status_code=400, detail="Difficulty must be 'easy', 'medium', or 'hard'")
+    
+    result = generate_quiz_from_rag(
+        num_questions=request.num_questions,
+        difficulty=request.difficulty
+    )
+    
+    return QuizResponse(
+        questions=result["questions"],
+        sources=result["sources"]
+    )
+
 @app.get("/")
 async def root():
     """Root endpoint with API information"""
@@ -490,6 +638,7 @@ async def root():
             "upload": "/upload-documents",
             "query": "/query",
             "generate_flashcards": "/generate-flashcards",
+            "generate_quiz": "/generate-quiz",
             "health": "/health"
         }
     }

@@ -5,6 +5,7 @@ import React, { useState } from 'react'
 import AuthGuard from '@/components/AuthGuard'
 import FileUpload from '@/components/FileUpload'
 import { Play, RotateCcw, CheckCircle, XCircle, Clock } from 'lucide-react'
+import { v4 as uuidv4 } from 'uuid';
 
 interface Question {
   id: string
@@ -30,11 +31,16 @@ export default function AIQuiz() {
   const [showResults, setShowResults] = useState(false)
   const [timeLeft, setTimeLeft] = useState(0)
   const [documentsProcessed, setDocumentsProcessed] = useState(0)
+  const [reviewMode, setReviewMode] = useState(false)
 
   const handleUploadSuccess = (data: any) => {
     setUploadedFiles(prev => [...prev, data.filename])
     setDocumentsProcessed(data.documents_processed)
   }
+
+  
+
+  
 
   const handleUploadError = (error: string) => {
     console.error('Upload error:', error)
@@ -51,11 +57,7 @@ export default function AIQuiz() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          difficulty: 'medium',
-          questionCount: 5
-        })
+        }
       })
 
       const result = await response.json()
@@ -72,6 +74,10 @@ export default function AIQuiz() {
 
         setQuiz(aiGeneratedQuiz)
         setTimeLeft(aiGeneratedQuiz.timeLimit! * 60) // Convert to seconds
+        // Initialize quiz session state
+        setCurrentQuestion(0)
+        setSelectedAnswers(new Array(aiGeneratedQuiz.questions.length).fill(-1))
+        setShowResults(false)
       } else {
         // Fallback to a simple quiz if AI generation fails
         console.error('Quiz generation failed:', result.error)
@@ -127,35 +133,57 @@ export default function AIQuiz() {
   }
 
   // Helper function to parse AI response into quiz format
-  const parseQuizFromAI = (aiResponse: string): Question[] => {
-    // This is a basic parser - you can enhance this based on the actual AI response format
-    // For now, return some sample questions that indicate the AI response was received
-    return [
-      {
-        id: '1',
-        question: 'Based on the AI analysis of your document, what is a key topic covered?',
-        options: [
-          'The AI has analyzed your document content',
-          'Please check the raw AI response for details',
-          'The document contains valuable information',
-          'All of the above'
-        ],
-        correctAnswer: 3,
-        explanation: `AI Response: ${aiResponse.substring(0, 200)}...`
-      },
-      {
-        id: '2',
-        question: 'What should you do to get better structured quiz questions?',
-        options: [
-          'Enhance the AI response parsing logic',
-          'Improve the prompt sent to the AI',
-          'Add more structured response formatting',
-          'All of the above'
-        ],
-        correctAnswer: 3,
-        explanation: 'The quiz generation is working, but the response parsing can be enhanced for better question formatting.'
+  const parseQuizFromAI = (aiResponse: {question: string, options: string[], correct_answer: string | number}[]): Question[] => {
+    const normalize = (s: string) => s
+      .toLowerCase()
+      .replace(/^option\s*[abcd]\s*[:).\-]\s*/i, '') // remove leading 'Option B: '
+      .replace(/^[abcd][).:\-]\s*/i, '')               // remove leading 'B) '
+      .replace(/^\(?[1-4]\)?[).:\-]\s*/i, '')         // remove leading '2) '
+      .trim()
+
+    const letterToIndex: Record<string, number> = { a: 0, b: 1, c: 2, d: 3 }
+
+    return aiResponse.map(q => {
+      const options = q.options || []
+
+      // Attempt 1: exact text match (case/whitespace sensitive trimmed)
+      let correctIndex = options.findIndex(opt => opt.trim() === String(q.correct_answer).trim())
+
+      if (correctIndex === -1) {
+        // Attempt 2: normalized text match (strip labels/punctuation, case-insensitive)
+        const normalizedOptions = options.map(normalize)
+        const normalizedAnswer = normalize(String(q.correct_answer))
+        correctIndex = normalizedOptions.findIndex(opt => opt === normalizedAnswer)
       }
-    ]
+
+      if (correctIndex === -1) {
+        // Attempt 3: if answer is a letter A-D
+        const letter = String(q.correct_answer).trim().toLowerCase()
+        if (letterToIndex[letter] !== undefined) correctIndex = letterToIndex[letter]
+      }
+
+      if (correctIndex === -1) {
+        // Attempt 4: if answer is a number 1-4
+        const num = Number(q.correct_answer)
+        if (!Number.isNaN(num) && num >= 1 && num <= 4) correctIndex = num - 1
+      }
+
+      // Fallback: try to infer from patterns like 'Option B: <text>' by matching prefix letters against options index
+      if (correctIndex === -1) {
+        const m = String(q.correct_answer).trim().match(/option\s*([abcd])/i)
+        if (m && letterToIndex[m[1].toLowerCase()]) correctIndex = letterToIndex[m[1].toLowerCase()]
+      }
+
+      if (correctIndex === -1) correctIndex = 0 // final fallback to avoid crashes
+
+      return {
+        id: uuidv4(),
+        question: q.question,
+        options,
+        correctAnswer: Math.min(Math.max(correctIndex, 0), Math.max(0, options.length - 1)),
+        explanation: ""
+      }
+    })
   }
 
   const startQuiz = () => {
@@ -163,6 +191,7 @@ export default function AIQuiz() {
     setSelectedAnswers(new Array(quiz!.questions.length).fill(-1))
     setShowResults(false)
     setTimeLeft(quiz!.timeLimit! * 60)
+    setReviewMode(false)
   }
 
   const selectAnswer = (answerIndex: number) => {
@@ -191,12 +220,14 @@ export default function AIQuiz() {
     setSelectedAnswers([])
     setShowResults(false)
     setTimeLeft(0)
+    setReviewMode(false)
   }
 
   const clearFiles = () => {
     setUploadedFiles([])
     setQuiz(null)
     setDocumentsProcessed(0)
+    setReviewMode(false)
   }
 
   const calculateScore = () => {
@@ -274,16 +305,118 @@ export default function AIQuiz() {
               <div className="space-y-4">
                 <button
                   onClick={resetQuiz}
-                  className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors mr-4"
+                  className="bg-blue-600 text-white px-6 py-3 cursor-pointer rounded-lg hover:bg-blue-700 transition-colors mr-4"
                 >
                   <RotateCcw className="h-4 w-4 inline mr-2" />
                   Take Another Quiz
                 </button>
                 <button
-                  onClick={() => setShowResults(false)}
-                  className="border border-gray-300 text-gray-700 px-6 py-3 rounded-lg hover:bg-gray-50 transition-colors"
+                  onClick={() => { setShowResults(false); setReviewMode(true); }}
+                  className="border border-gray-300 text-gray-700 px-6 py-3 cursor-pointer rounded-lg hover:bg-gray-50 transition-colors"
                 >
                   Review Answers
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </AuthGuard>
+    )
+  }
+
+  // Review Mode: show selected vs correct answers for each question
+  if (reviewMode && quiz) {
+    return (
+      <AuthGuard>
+        <div className="min-h-screen bg-gray-50">
+          <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div className="bg-white rounded-2xl shadow-lg p-8">
+              <div className="mb-6">
+                <h1 className="text-2xl font-bold text-gray-900">Review Answers</h1>
+                <p className="text-gray-600">Compare your choices with the correct answers.</p>
+              </div>
+
+              <div className="space-y-6">
+                {quiz.questions.map((q, idx) => {
+                  const selectedIdx = selectedAnswers[idx]
+                  const isCorrect = selectedIdx === q.correctAnswer
+                  return (
+                    <div key={q.id} className="border rounded-xl p-5">
+                      <div className="flex items-start justify-between mb-4">
+                        <h2 className="text-lg font-semibold text-gray-900">
+                          Q{idx + 1}. {q.question}
+                        </h2>
+                        <span className={`text-sm font-medium px-2 py-1 rounded ${isCorrect ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                          {isCorrect ? 'Correct' : 'Incorrect'}
+                        </span>
+                      </div>
+
+                      <div className="space-y-2">
+                        {q.options.map((opt, oIdx) => {
+                          const isSelected = selectedIdx === oIdx
+                          const isRight = q.correctAnswer === oIdx
+                          const base = 'w-full text-left p-3 rounded-lg border'
+                          const state = isRight
+                            ? 'border-green-300 bg-green-50'
+                            : isSelected && !isRight
+                              ? 'border-red-300 bg-red-50'
+                              : 'border-gray-200'
+                          return (
+                            <div key={oIdx} className={`${base} ${state}`}>
+                              <div className="flex items-center justify-between">
+                                <span className="text-gray-900">{opt}</span>
+                                <div className="flex items-center gap-2">
+                                  {isSelected && (
+                                    <span className="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-700">Your choice</span>
+                                  )}
+                                  {isRight && (
+                                    <span className="text-xs px-2 py-0.5 rounded bg-green-100 text-green-700">Correct</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+
+                      {selectedIdx === -1 && (
+                        <p className="mt-3 text-sm text-gray-500">You did not answer this question.</p>
+                      )}
+
+                      {/* Explicit answer summary */}
+                      <div className="mt-4 text-sm">
+                        <p className="text-gray-700">
+                          <span className="font-medium">Your answer:</span>{' '}
+                          {selectedIdx === -1 ? (
+                            <span className="text-gray-500">Unanswered</span>
+                          ) : (
+                            <span className={selectedIdx === q.correctAnswer ? 'text-green-700' : 'text-red-700'}>
+                              {q.options[selectedIdx]}
+                            </span>
+                          )}
+                        </p>
+                        <p className="text-gray-700 mt-1">
+                          <span className="font-medium">Correct answer:</span>{' '}
+                          <span className="text-green-700">{q.options[q.correctAnswer]}</span>
+                        </p>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div className="mt-8 flex gap-3">
+                <button
+                  onClick={() => { setReviewMode(false); setShowResults(true); }}
+                  className="px-6 py-3 cursor-pointer border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                >
+                  Back to Results
+                </button>
+                <button
+                  onClick={resetQuiz}
+                  className="px-6 py-3 cursor-pointer bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  Retake Quiz
                 </button>
               </div>
             </div>
@@ -331,7 +464,7 @@ export default function AIQuiz() {
                     <button
                       key={index}
                       onClick={() => selectAnswer(index)}
-                      className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
+                      className={`w-full text-left p-4 cursor-pointer rounded-lg border-2 transition-all ${
                         selectedAnswers[currentQuestion] === index
                           ? 'border-blue-500 bg-blue-50'
                           : 'border-gray-200 hover:border-gray-300'
@@ -359,14 +492,14 @@ export default function AIQuiz() {
                 <button
                   onClick={prevQuestion}
                   disabled={currentQuestion === 0}
-                  className="px-6 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="px-6 py-2 border border-gray-300 cursor-pointer text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   Previous
                 </button>
                 <button
                   onClick={nextQuestion}
                   disabled={selectedAnswers[currentQuestion] === -1}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="px-6 py-2 bg-blue-600 cursor-pointer text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {currentQuestion === quiz.questions.length - 1 ? 'Finish Quiz' : 'Next'}
                 </button>
@@ -400,7 +533,7 @@ export default function AIQuiz() {
                 {uploadedFiles.length > 0 && (
                   <button
                     onClick={clearFiles}
-                    className="text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                    className="text-sm text-gray-500 cursor-pointer hover:text-gray-700 transition-colors"
                   >
                     Clear All
                   </button>
@@ -467,7 +600,7 @@ export default function AIQuiz() {
                 <button
                   onClick={generateQuiz}
                   disabled={uploadedFiles.length === 0 || isGenerating}
-                  className="w-full bg-green-600 text-white py-3 px-6 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-semibold"
+                  className="w-full bg-green-600 text-white py-3 px-6 cursor-pointer rounded-lg hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-semibold"
                 >
                   {isGenerating ? (
                     <div className="flex items-center justify-center">

@@ -4,25 +4,14 @@ const FASTAPI_BASE_URL = process.env.FASTAPI_BASE_URL || 'http://localhost:8000'
 
 export async function POST(request: NextRequest) {
   try {
-    const { difficulty = 'medium', questionCount = 5 } = await request.json()
-
-    // Create a specific query for quiz generation
-    const quizQuery = `Generate ${questionCount} multiple choice quiz questions with ${difficulty} difficulty level based on the uploaded PDF content. For each question, provide:
-1. The question text
-2. Four answer options (A, B, C, D)
-3. The correct answer
-4. A brief explanation
-
-Format the response as a structured quiz with clear questions, options, and answers.`
-
-    // Send query to FastAPI backend
-    const response = await fetch(`${FASTAPI_BASE_URL}/query`, {
+    const response = await fetch(`${FASTAPI_BASE_URL}/generate-quiz`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Type': 'application/json',
       },
-      body: new URLSearchParams({
-        query: quizQuery
+      body: JSON.stringify({
+        num_questions: 8,
+        difficulty: 'easy'
       })
     })
 
@@ -38,23 +27,20 @@ Format the response as a structured quiz with clear questions, options, and answ
     }
 
     const result = await response.json()
-    
-    // Parse the AI response to extract quiz questions
-    // This is a simplified parser - you might want to enhance this based on the actual AI response format
-    const quizResponse = result.response
+    const questionsList = result.questions
     
     // For now, return the raw response and let the frontend handle parsing
     // In a production app, you'd want to parse this into a structured format
     return NextResponse.json({
       success: true,
-      rawResponse: quizResponse,
+      rawResponse: questionsList,
       sources: result.sources || [],
       // You can add structured parsing here later
       quiz: {
         title: "AI Generated Quiz",
         questions: [], // Will be populated by frontend parsing or enhanced backend processing
-        difficulty,
-        questionCount
+        difficulty: "easy",
+        questionCount: 8
       }
     })
 
